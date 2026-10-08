@@ -1,13 +1,13 @@
 import { merchantById } from "@/data/merchants"
-import { Payment } from "@/data/types"
+import { Payment, PaymentFilters, PaymentStatus } from "@/data/types"
 import { formatMoney } from "./money"
 
 /**
  * CSV export for the payments table.
  *
- * The column set is fixed. Ops has asked for control over it — that is
- * NWP-101 — but today everyone gets every column, including the card
- * last four, whether or not the file is going to a merchant.
+ * Ops chooses the columns and the scope (NWP-101). Both arrive from the
+ * client, so the route parses them here against an allowlist before they
+ * reach a query or a filename.
  */
 
 export const EXPORT_COLUMNS = [
@@ -24,6 +24,54 @@ export const EXPORT_COLUMNS = [
 ] as const
 
 export type ExportColumn = (typeof EXPORT_COLUMNS)[number]
+
+/** Card last four is opt-in: these files often go straight to a merchant. */
+export const DEFAULT_EXPORT_COLUMNS: readonly ExportColumn[] =
+  EXPORT_COLUMNS.filter((column) => column !== "last4")
+
+/**
+ * Parse the `columns` param. Absent means the defaults. Otherwise every name
+ * must be a known column; duplicates are dropped and the requested order is
+ * kept. An unknown name or an empty selection returns null, and the route
+ * rejects the request rather than guessing.
+ */
+export function parseExportColumns(raw: string | null): ExportColumn[] | null {
+  if (raw === null) return [...DEFAULT_EXPORT_COLUMNS]
+
+  const requested = raw.split(",")
+  if (
+    !requested.every((name) => EXPORT_COLUMNS.includes(name as ExportColumn))
+  ) {
+    return null
+  }
+
+  const columns = [...new Set(requested as ExportColumn[])]
+  return columns.length > 0 ? columns : null
+}
+
+export const EXPORT_SCOPES = ["filtered", "all"] as const
+
+export type ExportScope = (typeof EXPORT_SCOPES)[number]
+
+/** Parse the `scope` param. Absent means the current filter. */
+export function parseExportScope(raw: string | null): ExportScope | null {
+  if (raw === null) return "filtered"
+  return EXPORT_SCOPES.includes(raw as ExportScope)
+    ? (raw as ExportScope)
+    : null
+}
+
+/** What goes in the filename. A closed set, so raw input never reaches it. */
+export type ExportLabel = PaymentStatus | "filtered" | "all"
+
+export function exportLabel(
+  scope: ExportScope,
+  filters: PaymentFilters,
+): ExportLabel {
+  if (scope === "all") return "all"
+  if (filters.status && filters.status !== "all") return filters.status
+  return "filtered"
+}
 
 function escapeCell(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
@@ -66,6 +114,7 @@ export function toCsv(
   return [header, ...rows].join("\n")
 }
 
-export function exportFilename(date = new Date()): string {
-  return `payments-${date.toISOString().slice(0, 10)}.csv`
+export function exportFilename(date = new Date(), label?: ExportLabel): string {
+  const day = date.toISOString().slice(0, 10)
+  return label ? `payments-${label}-${day}.csv` : `payments-${day}.csv`
 }

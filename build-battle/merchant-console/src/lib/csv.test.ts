@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { Payment } from "@/data/types"
-import { EXPORT_COLUMNS, exportFilename, toCsv } from "./csv"
+import {
+  DEFAULT_EXPORT_COLUMNS,
+  EXPORT_COLUMNS,
+  exportFilename,
+  exportLabel,
+  parseExportColumns,
+  parseExportScope,
+  toCsv,
+} from "./csv"
 
 /**
  * The export is the file ops hands to a merchant, so a broken cell is a
@@ -37,7 +45,9 @@ describe("toCsv", () => {
 
   it("quotes cells containing a comma, so amounts do not split", () => {
     const large = { ...payment, amount: 123456789 }
-    expect(toCsv([large], ["amount"])).toBe(['amount', '"$1,234,567.89"'].join("\n"))
+    expect(toCsv([large], ["amount"])).toBe(
+      ["amount", '"$1,234,567.89"'].join("\n"),
+    )
   })
 
   it("doubles embedded quotes rather than dropping them", () => {
@@ -49,7 +59,10 @@ describe("toCsv", () => {
 
   it("keeps a newline inside a description in one quoted cell", () => {
     const multiline = { ...payment, description: "Order 1180\nsecond line" }
-    const body = toCsv([multiline], ["description"]).split("\n").slice(1).join("\n")
+    const body = toCsv([multiline], ["description"])
+      .split("\n")
+      .slice(1)
+      .join("\n")
     expect(body).toBe('"Order 1180\nsecond line"')
   })
 
@@ -76,10 +89,81 @@ describe("toCsv", () => {
   })
 })
 
+describe("parseExportColumns", () => {
+  it("keeps a subset of columns in the order requested", () => {
+    const columns = parseExportColumns("amount,id,status")
+    expect(columns).toEqual(["amount", "id", "status"])
+    expect(toCsv([payment], columns!)).toBe(
+      ["amount,id,status", "$250.00,pay_0001,captured"].join("\n"),
+    )
+  })
+
+  it("leaves the card last four out by default", () => {
+    const columns = parseExportColumns(null)
+    expect(columns).toEqual([...DEFAULT_EXPORT_COLUMNS])
+    expect(columns).not.toContain("last4")
+
+    const header = toCsv([payment], columns!).split("\n")[0]
+    expect(header.split(",")).not.toContain("last4")
+    expect(toCsv([payment], columns!)).not.toContain("4242")
+  })
+
+  it("still includes the last four when it is asked for", () => {
+    expect(parseExportColumns("id,last4")).toEqual(["id", "last4"])
+  })
+
+  it("rejects an empty selection rather than writing an empty file", () => {
+    expect(parseExportColumns("")).toBeNull()
+    expect(parseExportColumns(",")).toBeNull()
+  })
+
+  it("rejects any column name that is not on the allowlist", () => {
+    expect(parseExportColumns("id,password")).toBeNull()
+    expect(parseExportColumns("id, amount")).toBeNull()
+    expect(parseExportColumns("ID")).toBeNull()
+  })
+
+  it("drops a repeated column instead of writing it twice", () => {
+    expect(parseExportColumns("id,amount,id")).toEqual(["id", "amount"])
+  })
+
+  it("defaults to every column except the last four", () => {
+    expect(DEFAULT_EXPORT_COLUMNS).toEqual(
+      EXPORT_COLUMNS.filter((column) => column !== "last4"),
+    )
+  })
+})
+
+describe("parseExportScope", () => {
+  it("defaults to the current filter", () => {
+    expect(parseExportScope(null)).toBe("filtered")
+  })
+
+  it("accepts the two known scopes and nothing else", () => {
+    expect(parseExportScope("filtered")).toBe("filtered")
+    expect(parseExportScope("all")).toBe("all")
+    expect(parseExportScope("everything")).toBeNull()
+    expect(parseExportScope("")).toBeNull()
+  })
+})
+
 describe("exportFilename", () => {
   it("stamps the UTC date, so two exports on the same day collide by design", () => {
     expect(exportFilename(new Date("2026-03-14T23:00:00.000Z"))).toBe(
       "payments-2026-03-14.csv",
     )
+  })
+
+  it("names the scope, for example disputed payments", () => {
+    const date = new Date("2026-08-13T12:00:00.000Z")
+    expect(
+      exportFilename(date, exportLabel("filtered", { status: "disputed" })),
+    ).toBe("payments-disputed-2026-08-13.csv")
+    expect(
+      exportFilename(date, exportLabel("all", { status: "disputed" })),
+    ).toBe("payments-all-2026-08-13.csv")
+    expect(
+      exportFilename(date, exportLabel("filtered", { status: "all" })),
+    ).toBe("payments-filtered-2026-08-13.csv")
   })
 })
